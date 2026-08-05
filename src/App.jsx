@@ -9,6 +9,7 @@ const supabase = createClient(
 );
 
 const API_KEY_STORAGE = "api-maree-key";
+const DEFAULT_API_KEY = "d7581cbfad1d5f81245ddbdb304ce653";
 const PRENOMS = ["Joris", "Etienne", "Adrien"];
 
 // Points de pêche réels -> nom du site officiel le plus proche dans l'API api-maree.fr
@@ -86,7 +87,7 @@ export default function JournalPeche() {
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("log");
 
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
   const [showSettings, setShowSettings] = useState(false);
   const [sites, setSites] = useState(null); // liste brute renvoyée par /sites
 
@@ -176,7 +177,7 @@ export default function JournalPeche() {
     if (!session) return;
     loadSorties();
     const savedKey = localStorage.getItem(API_KEY_STORAGE);
-    if (savedKey) setApiKey(savedKey);
+    setApiKey(savedKey || DEFAULT_API_KEY);
 
     // Live sync : recharge la liste dès qu'un frère ajoute/supprime une sortie
     const channel = supabase
