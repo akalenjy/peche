@@ -206,6 +206,7 @@ export default function JournalPeche() {
   const [photoPreview, setPhotoPreview] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [lightbox, setLightbox] = useState(null);
+  const [detailSortie, setDetailSortie] = useState(null);
 
   const [predictCoef, setPredictCoef] = useState(75);
   const [predictDirection, setPredictDirection] = useState("toutes");
@@ -1183,11 +1184,17 @@ export default function JournalPeche() {
                         className="rounded-lg p-4 flex flex-col gap-3"
                         style={{ background: "#122B32", borderLeft: `3px solid ${coefColor(s.coefficient)}` }}
                       >
-                        <div className="flex items-center justify-between gap-3">
+                        <div
+                          className="flex items-center justify-between gap-3 cursor-pointer"
+                          onClick={() => setDetailSortie(s)}
+                        >
                           {s.photoUrl && (
                             <button
                               type="button"
-                              onClick={() => setLightbox(s.photoUrl)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setLightbox(s.photoUrl);
+                              }}
                               className="shrink-0 rounded-md overflow-hidden"
                               style={{ width: 56, height: 56 }}
                             >
@@ -1230,7 +1237,13 @@ export default function JournalPeche() {
                             <span className="mono text-lg font-semibold" style={{ color: coefColor(s.coefficient) }}>
                               {s.coefficient}
                             </span>
-                            <button onClick={() => removeSortie(s.id)} aria-label="Supprimer">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeSortie(s.id);
+                              }}
+                              aria-label="Supprimer"
+                            >
                               <Trash2 className="w-4 h-4" style={{ color: "#5A6E6A" }} />
                             </button>
                           </div>
@@ -1325,6 +1338,74 @@ export default function JournalPeche() {
             onClick={() => setLightbox(null)}
           >
             <img src={lightbox} alt="prise en grand" className="max-w-full max-h-full rounded-lg" />
+          </div>
+        )}
+
+        {detailSortie && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: "rgba(11,32,39,0.92)" }}
+            onClick={() => setDetailSortie(null)}
+          >
+            <div
+              className="w-full max-w-lg rounded-lg p-5 space-y-4"
+              style={{ background: "#122B32", maxHeight: "90vh", overflowY: "auto" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="mono text-xs" style={{ color: "#7A9490" }}>
+                    {detailSortie.date} · {detailSortie.heure}{detailSortie.heureFin ? `–${detailSortie.heureFin}` : ""}
+                  </p>
+                  <p className="text-lg font-semibold" style={{ color: "#F2E8D5" }}>
+                    {detailSortie.prenom} · {detailSortie.pointLabel || detailSortie.point}
+                  </p>
+                </div>
+                <button onClick={() => setDetailSortie(null)} aria-label="Fermer" className="text-xs shrink-0" style={{ color: "#7A9490" }}>
+                  Fermer
+                </button>
+              </div>
+
+              {detailSortie.photoUrl && (
+                <img src={detailSortie.photoUrl} alt="prise" className="w-full rounded-lg max-h-72 object-cover" />
+              )}
+
+              <div className="flex flex-wrap gap-3 text-xs" style={{ color: "#C7D3D0" }}>
+                <span className="mono" style={{ color: coefColor(detailSortie.coefficient) }}>coef {detailSortie.coefficient}</span>
+                {detailSortie.direction && <span>marée {detailSortie.direction}</span>}
+                {detailSortie.hauteur != null && <span>hauteur {detailSortie.hauteur.toFixed(2)} m</span>}
+                {detailSortie.prise ? (
+                  <span className="flex items-center gap-1" style={{ color: "#7FA37A" }}>
+                    <Fish className="w-3 h-3" /> {detailSortie.nbPoissons ? `${detailSortie.nbPoissons}× ` : ""}{detailSortie.espece || "prise"}
+                  </span>
+                ) : (
+                  <span style={{ color: "#8C7355" }}>bredouille</span>
+                )}
+                {detailSortie.heurePic && (
+                  <span style={{ color: "#C97B3D" }}>
+                    pic {detailSortie.heurePic}{detailSortie.coefPic != null ? ` · coef ${detailSortie.coefPic}` : ""}
+                  </span>
+                )}
+              </div>
+
+              {detailSortie.notes && (
+                <p className="text-sm" style={{ color: "#C7D3D0" }}>{detailSortie.notes}</p>
+              )}
+
+              <div>
+                <p className="eyebrow text-xs mb-2" style={{ color: "#7A9490" }}>Lieu(x) de prise</p>
+                {detailSortie.lieux && detailSortie.lieux.length > 0 ? (
+                  <CatchMap
+                    center={[detailSortie.lieux[0].lat, detailSortie.lieux[0].lng]}
+                    points={detailSortie.lieux}
+                    interactive={false}
+                    height={220}
+                  />
+                ) : (
+                  <p className="text-sm" style={{ color: "#7A9490" }}>Aucun lieu précis enregistré pour cette sortie.</p>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
