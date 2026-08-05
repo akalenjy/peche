@@ -7,12 +7,14 @@ create table sorties (
   point_label text,
   date date not null,
   heure time not null,
+  heure_fin time,
   coefficient int not null,
   hauteur numeric,
   coef_manuel boolean default false,
   direction text, -- 'montante' | 'descendante' | null
   photo_url text,
   prise boolean not null,
+  nb_poissons int default 0,
   espece text,
   notes text,
   created_at timestamptz default now()
@@ -58,3 +60,8 @@ create policy "authenticated can delete photos"
 -- photos et de la direction de marée), lance plutôt ces deux lignes seules :
 -- alter table sorties add column if not exists direction text;
 -- alter table sorties add column if not exists photo_url text;
+
+-- ⤵ Si la table "sorties" existe déjà (installation faite avant l'ajout de
+-- l'heure de fin et du nombre de poissons), lance plutôt ces deux lignes seules :
+-- alter table sorties add column if not exists heure_fin time;
+-- alter table sorties add column if not exists nb_poissons int default 0;

@@ -96,7 +96,9 @@ export default function JournalPeche() {
     point: SPOTS[0].key,
     date: new Date().toISOString().slice(0, 10),
     heure: new Date().toTimeString().slice(0, 5),
+    heureFin: "",
     prise: true,
+    nbPoissons: 1,
     espece: "",
     notes: "",
   });
@@ -161,12 +163,14 @@ export default function JournalPeche() {
         pointLabel: row.point_label,
         date: row.date,
         heure: row.heure ? row.heure.slice(0, 5) : row.heure,
+        heureFin: row.heure_fin ? row.heure_fin.slice(0, 5) : row.heure_fin,
         coefficient: row.coefficient,
         hauteur: row.hauteur,
         coefManuel: row.coef_manuel,
         direction: row.direction,
         photoUrl: row.photo_url,
         prise: row.prise,
+        nbPoissons: row.nb_poissons,
         espece: row.espece,
         notes: row.notes,
       }))
@@ -331,12 +335,14 @@ export default function JournalPeche() {
         point_label: spot ? spot.label : form.point,
         date: form.date,
         heure: form.heure,
+        heure_fin: form.heureFin || null,
         coefficient: effectiveCoef,
         hauteur: manualOverride ? null : tide.hauteur,
         coef_manuel: manualOverride,
         direction: effectiveDirection,
         photo_url: photoUrl,
         prise: form.prise,
+        nb_poissons: form.prise ? Number(form.nbPoissons) || 0 : 0,
         espece: form.espece,
         notes: form.notes,
       },
@@ -346,7 +352,7 @@ export default function JournalPeche() {
       setError("Impossible d'enregistrer sur le carnet partagé. Réessaie.");
       return;
     }
-    setForm((f) => ({ ...f, espece: "", notes: "" }));
+    setForm((f) => ({ ...f, espece: "", notes: "", nbPoissons: 1 }));
     setPhotoFile(null);
     setPhotoPreview(null);
     loadSorties();
@@ -588,25 +594,38 @@ export default function JournalPeche() {
               </select>
             </div>
 
+            <div>
+              <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>Date</label>
+              <input
+                type="date"
+                value={form.date}
+                onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+                className="w-full rounded-md px-3 py-2 text-sm mono outline-none"
+                style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
+              />
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>Date</label>
+                <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>
+                  <Clock className="w-3 h-3 inline mr-1" />Heure de début
+                </label>
                 <input
-                  type="date"
-                  value={form.date}
-                  onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+                  type="time"
+                  value={form.heure}
+                  onChange={(e) => setForm((f) => ({ ...f, heure: e.target.value }))}
                   className="w-full rounded-md px-3 py-2 text-sm mono outline-none"
                   style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
                 />
               </div>
               <div>
                 <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>
-                  <Clock className="w-3 h-3 inline mr-1" />Heure de la prise
+                  <Clock className="w-3 h-3 inline mr-1" />Heure de fin
                 </label>
                 <input
                   type="time"
-                  value={form.heure}
-                  onChange={(e) => setForm((f) => ({ ...f, heure: e.target.value }))}
+                  value={form.heureFin}
+                  onChange={(e) => setForm((f) => ({ ...f, heureFin: e.target.value }))}
                   className="w-full rounded-md px-3 py-2 text-sm mono outline-none"
                   style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
                 />
@@ -754,6 +773,19 @@ export default function JournalPeche() {
                   Bredouille
                 </button>
               </div>
+              {form.prise && (
+                <div className="mt-3">
+                  <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>Nombre de poissons</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={form.nbPoissons}
+                    onChange={(e) => setForm((f) => ({ ...f, nbPoissons: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2 text-sm mono outline-none"
+                    style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
+                  />
+                </div>
+              )}
             </div>
 
             <div>
@@ -809,7 +841,9 @@ export default function JournalPeche() {
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span className="mono text-xs" style={{ color: "#7A9490" }}>{s.date} · {s.heure}</span>
+                      <span className="mono text-xs" style={{ color: "#7A9490" }}>
+                        {s.date} · {s.heure}{s.heureFin ? `–${s.heureFin}` : ""}
+                      </span>
                       <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "#0B2027", color: "#9FB3AE" }}>
                         {s.prenom}
                       </span>
@@ -821,7 +855,7 @@ export default function JournalPeche() {
                       )}
                       {s.prise ? (
                         <span className="text-xs flex items-center gap-1" style={{ color: "#7FA37A" }}>
-                          <Fish className="w-3 h-3" /> {s.espece || "prise"}
+                          <Fish className="w-3 h-3" /> {s.nbPoissons ? `${s.nbPoissons}× ` : ""}{s.espece || "prise"}
                         </span>
                       ) : (
                         <span className="text-xs" style={{ color: "#8C7355" }}>bredouille</span>
