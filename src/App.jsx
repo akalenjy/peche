@@ -26,7 +26,15 @@ const API_KEY_STORAGE = "api-maree-key";
 const DEFAULT_API_KEY = "d7581cbfad1d5f81245ddbdb304ce653";
 const PRENOMS = ["Joris", "Etienne", "Adrien"];
 
-const DEFAULT_SITE_ID = "benodet";
+const DEFAULT_SPOT_ID = "custom-combrit";
+
+// Lieux de pêche perso qui n'ont pas leur propre site officiel dans l'API
+// api-maree.fr : on les rattache au site officiel le plus proche pour le calcul
+// de marée, tout en gardant leur nom réel à l'affichage.
+const CUSTOM_SPOTS = [
+  { key: "combrit", label: "Anse de Combrit", siteQuery: "Bénodet" },
+  { key: "sainte-marine", label: "Sainte-Marine", siteQuery: "Bénodet" },
+];
 
 const BUCKETS = [
   { label: "20–40", min: 20, max: 40, tag: "mortes-eaux" },
@@ -145,6 +153,65 @@ function CatchMap({ center, points, onAddPoint, onRemovePoint, interactive, heig
   return <div ref={containerRef} style={{ height, width: "100%", borderRadius: 8 }} />;
 }
 
+// Champ de recherche pour choisir un lieu de pêche parmi les spots perso et les
+// sites officiels de l'API marée, sans passer par un long menu déroulant.
+function SpotPicker({ value, options, onChange, placeholder, small }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = options.find((o) => o.id === value);
+  const selectedLabel = selected ? selected.label : "";
+
+  useEffect(() => {
+    setQuery(selectedLabel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, selectedLabel]);
+
+  const filtered = (query.trim()
+    ? options.filter((o) => o.label.toLowerCase().includes(query.trim().toLowerCase()))
+    : options
+  ).slice(0, 8);
+
+  return (
+    <div className="relative">
+      <input
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        className={`w-full rounded-md outline-none ${small ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm"}`}
+        style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
+      />
+      {open && filtered.length > 0 && (
+        <div
+          className="absolute left-0 right-0 mt-1 rounded-md overflow-y-auto"
+          style={{ background: "#0B2027", border: "1px solid #1D3A41", maxHeight: 220, zIndex: 30 }}
+        >
+          {filtered.map((o) => (
+            <button
+              type="button"
+              key={o.id}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onChange(o.id);
+                setQuery(o.label);
+                setOpen(false);
+              }}
+              className="w-full text-left px-3 py-1.5 text-sm"
+              style={{ color: "#F2E8D5" }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function JournalPeche() {
   const [session, setSession] = useState(undefined); // undefined = pas encore vérifié, null = pas connecté
   const [loginPassword, setLoginPassword] = useState("");
@@ -167,7 +234,7 @@ export default function JournalPeche() {
 
   const [form, setForm] = useState({
     prenom: PRENOMS[0],
-    point: DEFAULT_SITE_ID,
+    point: DEFAULT_SPOT_ID,
     date: new Date().toISOString().slice(0, 10),
     heure: new Date().toTimeString().slice(0, 5),
     heureFin: "",
@@ -202,7 +269,7 @@ export default function JournalPeche() {
   const [predictDirection, setPredictDirection] = useState("toutes");
 
   // Prévision de la semaine : meilleurs moments à venir pour un point de pêche donné
-  const [weekSpot, setWeekSpot] = useState(DEFAULT_SITE_ID);
+  const [weekSpot, setWeekSpot] = useState(DEFAULT_SPOT_ID);
   const [weekTides, setWeekTides] = useState({ status: "idle", days: [], error: null });
 
   // --- Authentification ---
@@ -341,17 +408,19 @@ export default function JournalPeche() {
     })();
   }, []);
 
-  function findSite(siteId) {
-    if (!sites) return null;
-    return sites.find((s) => s.site_id === siteId) || null;
+  function findSpot(spotId) {
+    return allSpots.find((sp) => sp.id === spotId) || null;
   }
 
-  function resolveSiteId(siteId) {
-    return findSite(siteId) ? siteId : null;
+  function resolveSiteId(spotId) {
+    const spot = findSpot(spotId);
+    return spot && spot.siteId ? spot.siteId : null;
   }
 
-  function resolveSiteCoords(siteId) {
-    const site = findSite(siteId);
+  function resolveSiteCoords(spotId) {
+    const siteId = resolveSiteId(spotId);
+    if (!siteId || !sites) return ESTUAIRE_CENTER;
+    const site = sites.find((s) => s.site_id === siteId);
     return site ? [site.latitude, site.longitude] : ESTUAIRE_CENTER;
   }
 
@@ -549,7 +618,7 @@ export default function JournalPeche() {
   async function addSortie(e) {
     e.preventDefault();
     if (effectiveCoef == null) return;
-    const site = findSite(form.point);
+    const spot = findSpot(form.point);
     setSaving(true);
     setError(null);
 
@@ -571,7 +640,7 @@ export default function JournalPeche() {
       {
         prenom: form.prenom,
         point: form.point,
-        point_label: site ? site.site_name : form.point,
+        point_label: spot ? spot.label : form.point,
         date: form.date,
         heure: form.heure,
         heure_fin: form.heureFin || null,
@@ -612,8 +681,15 @@ export default function JournalPeche() {
     loadSorties();
   }
 
-  const sortedSites = useMemo(() => {
-    return (sites || []).slice().sort((a, b) => (a.site_name || "").localeCompare(b.site_name || "", "fr"));
+  const allSpots = useMemo(() => {
+    const officialSites = (sites || []).slice().sort((a, b) => (a.site_name || "").localeCompare(b.site_name || "", "fr"));
+    const custom = CUSTOM_SPOTS.map((c) => {
+      const q = c.siteQuery.toLowerCase();
+      const match = officialSites.find((s) => (s.site_name || "").toLowerCase().includes(q));
+      return { id: `custom-${c.key}`, label: c.label, siteId: match ? match.site_id : null };
+    });
+    const official = officialSites.map((s) => ({ id: s.site_id, label: s.site_name, siteId: s.site_id }));
+    return [...custom, ...official];
   }, [sites]);
 
   const filteredForStats = useMemo(() => {
@@ -864,17 +940,12 @@ export default function JournalPeche() {
               <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>
                 <MapPin className="w-3 h-3 inline mr-1" />Point de pêche
               </label>
-              <select
+              <SpotPicker
                 value={form.point}
-                onChange={(e) => setForm((f) => ({ ...f, point: e.target.value }))}
-                className="w-full rounded-md px-3 py-2 text-sm outline-none"
-                style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
-              >
-                {sortedSites.length === 0 && <option value={form.point}>Chargement des sites…</option>}
-                {sortedSites.map((s) => (
-                  <option key={s.site_id} value={s.site_id}>{s.site_name}</option>
-                ))}
-              </select>
+                options={allSpots}
+                onChange={(id) => setForm((f) => ({ ...f, point: id }))}
+                placeholder="Cherche un lieu (Anse de Combrit, Bénodet…)"
+              />
             </div>
 
             <div>
@@ -1409,17 +1480,9 @@ export default function JournalPeche() {
                 <p className="eyebrow text-xs" style={{ color: "#7A9490" }}>
                   Meilleurs moments cette semaine
                 </p>
-                <select
-                  value={weekSpot}
-                  onChange={(e) => setWeekSpot(e.target.value)}
-                  className="text-xs rounded-md px-2 py-1 outline-none"
-                  style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
-                >
-                  {sortedSites.length === 0 && <option value={weekSpot}>Chargement…</option>}
-                  {sortedSites.map((s) => (
-                    <option key={s.site_id} value={s.site_id}>{s.site_name}</option>
-                  ))}
-                </select>
+                <div style={{ width: 200 }}>
+                  <SpotPicker value={weekSpot} options={allSpots} onChange={setWeekSpot} placeholder="Lieu…" small />
+                </div>
               </div>
 
               {weekTides.status === "no_key" && (
