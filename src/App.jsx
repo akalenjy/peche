@@ -26,17 +26,7 @@ const API_KEY_STORAGE = "api-maree-key";
 const DEFAULT_API_KEY = "d7581cbfad1d5f81245ddbdb304ce653";
 const PRENOMS = ["Joris", "Etienne", "Adrien"];
 
-// Points de pêche réels -> nom du site officiel le plus proche dans l'API api-maree.fr
-const SPOTS = [
-  { key: "combrit", label: "Anse de Combrit", siteQuery: "Bénodet" },
-  { key: "sainte-marine", label: "Sainte-Marine", siteQuery: "Bénodet" },
-  { key: "benodet", label: "Bénodet", siteQuery: "Bénodet" },
-  { key: "loctudy", label: "Loctudy", siteQuery: "Loctudy" },
-  { key: "concarneau", label: "Concarneau", siteQuery: "Concarneau" },
-  { key: "guilvinec", label: "Le Guilvinec", siteQuery: "Guilvinec" },
-  { key: "douarnenez", label: "Douarnenez", siteQuery: "Douarnenez" },
-  { key: "audierne", label: "Audierne", siteQuery: "Audierne" },
-];
+const DEFAULT_SITE_ID = "benodet";
 
 const BUCKETS = [
   { label: "20–40", min: 20, max: 40, tag: "mortes-eaux" },
@@ -177,7 +167,7 @@ export default function JournalPeche() {
 
   const [form, setForm] = useState({
     prenom: PRENOMS[0],
-    point: SPOTS[0].key,
+    point: DEFAULT_SITE_ID,
     date: new Date().toISOString().slice(0, 10),
     heure: new Date().toTimeString().slice(0, 5),
     heureFin: "",
@@ -212,7 +202,7 @@ export default function JournalPeche() {
   const [predictDirection, setPredictDirection] = useState("toutes");
 
   // Prévision de la semaine : meilleurs moments à venir pour un point de pêche donné
-  const [weekSpot, setWeekSpot] = useState(SPOTS[0].key);
+  const [weekSpot, setWeekSpot] = useState(DEFAULT_SITE_ID);
   const [weekTides, setWeekTides] = useState({ status: "idle", days: [], error: null });
 
   // --- Authentification ---
@@ -351,20 +341,18 @@ export default function JournalPeche() {
     })();
   }, []);
 
-  function resolveSiteId(spotKey) {
-    const spot = SPOTS.find((s) => s.key === spotKey);
-    if (!spot || !sites || sites.length === 0) return null;
-    const q = spot.siteQuery.toLowerCase();
-    const found = sites.find((s) => (s.site_name || "").toLowerCase().includes(q));
-    return found ? found.site_id : null;
+  function findSite(siteId) {
+    if (!sites) return null;
+    return sites.find((s) => s.site_id === siteId) || null;
   }
 
-  function resolveSiteCoords(spotKey) {
-    const spot = SPOTS.find((s) => s.key === spotKey);
-    if (!spot || !sites || sites.length === 0) return ESTUAIRE_CENTER;
-    const q = spot.siteQuery.toLowerCase();
-    const found = sites.find((s) => (s.site_name || "").toLowerCase().includes(q));
-    return found ? [found.latitude, found.longitude] : ESTUAIRE_CENTER;
+  function resolveSiteId(siteId) {
+    return findSite(siteId) ? siteId : null;
+  }
+
+  function resolveSiteCoords(siteId) {
+    const site = findSite(siteId);
+    return site ? [site.latitude, site.longitude] : ESTUAIRE_CENTER;
   }
 
   // --- Récupère les pleines mers / basses mers + coefficients pour le point + la date choisis ---
@@ -561,7 +549,7 @@ export default function JournalPeche() {
   async function addSortie(e) {
     e.preventDefault();
     if (effectiveCoef == null) return;
-    const spot = SPOTS.find((s) => s.key === form.point);
+    const site = findSite(form.point);
     setSaving(true);
     setError(null);
 
@@ -583,7 +571,7 @@ export default function JournalPeche() {
       {
         prenom: form.prenom,
         point: form.point,
-        point_label: spot ? spot.label : form.point,
+        point_label: site ? site.site_name : form.point,
         date: form.date,
         heure: form.heure,
         heure_fin: form.heureFin || null,
@@ -623,6 +611,10 @@ export default function JournalPeche() {
     }
     loadSorties();
   }
+
+  const sortedSites = useMemo(() => {
+    return (sites || []).slice().sort((a, b) => (a.site_name || "").localeCompare(b.site_name || "", "fr"));
+  }, [sites]);
 
   const filteredForStats = useMemo(() => {
     if (!sorties) return [];
@@ -878,8 +870,9 @@ export default function JournalPeche() {
                 className="w-full rounded-md px-3 py-2 text-sm outline-none"
                 style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
               >
-                {SPOTS.map((s) => (
-                  <option key={s.key} value={s.key}>{s.label}</option>
+                {sortedSites.length === 0 && <option value={form.point}>Chargement des sites…</option>}
+                {sortedSites.map((s) => (
+                  <option key={s.site_id} value={s.site_id}>{s.site_name}</option>
                 ))}
               </select>
             </div>
@@ -1422,8 +1415,9 @@ export default function JournalPeche() {
                   className="text-xs rounded-md px-2 py-1 outline-none"
                   style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
                 >
-                  {SPOTS.map((s) => (
-                    <option key={s.key} value={s.key}>{s.label}</option>
+                  {sortedSites.length === 0 && <option value={weekSpot}>Chargement…</option>}
+                  {sortedSites.map((s) => (
+                    <option key={s.site_id} value={s.site_id}>{s.site_name}</option>
                   ))}
                 </select>
               </div>
