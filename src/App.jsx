@@ -44,6 +44,48 @@ const BUCKETS = [
   { label: "100–120", min: 100, max: 120, tag: "vives-eaux" },
 ];
 
+const PRESSURE_BUCKETS = [
+  { label: "<1000", min: 950, max: 1000 },
+  { label: "1000–1010", min: 1000, max: 1010 },
+  { label: "1010–1015", min: 1010, max: 1015 },
+  { label: "1015–1020", min: 1015, max: 1020 },
+  { label: "1020+", min: 1020, max: 1060 },
+];
+
+// Heures représentatives utilisées pour comparer plusieurs moments dans une même
+// journée (équivalent des pleines/basses mers, mais pour la météo).
+const WEATHER_CHECKPOINTS = ["08:00", "13:00", "18:00"];
+
+const WEATHER_CODES = {
+  0: "ciel dégagé", 1: "plutôt dégagé", 2: "partiellement nuageux", 3: "couvert",
+  45: "brouillard", 48: "brouillard givrant",
+  51: "bruine légère", 53: "bruine", 55: "bruine forte",
+  61: "pluie légère", 63: "pluie", 65: "pluie forte",
+  71: "neige légère", 73: "neige", 75: "neige forte",
+  80: "averses légères", 81: "averses", 82: "averses fortes",
+  95: "orage", 96: "orage avec grêle", 99: "orage violent",
+};
+
+function weatherDesc(code) {
+  return WEATHER_CODES[code] || null;
+}
+
+function pressureColor(p) {
+  if (p == null) return "#5A6E6A";
+  if (p < 1000) return "#C4522A";
+  if (p < 1010) return "#C97B3D";
+  if (p < 1020) return "#7FA37A";
+  return "#6FA8AE";
+}
+
+function pressureTag(p) {
+  if (p == null) return "pression non déterminée";
+  if (p < 1000) return "dépression";
+  if (p < 1010) return "pression basse";
+  if (p < 1020) return "pression normale";
+  return "anticyclone";
+}
+
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
@@ -212,6 +254,92 @@ function SpotPicker({ value, options, onChange, placeholder, small }) {
   );
 }
 
+// Recherche de ville (n'importe où) via le géocodage gratuit Open-Meteo, pour
+// l'onglet Eau douce où il n'y a pas de liste de sites fixe comme pour la marée.
+function CitySearch({ value, onChange, placeholder, small }) {
+  const [query, setQuery] = useState(value ? value.label : "");
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setQuery(value ? value.label : "");
+  }, [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    const t = setTimeout(() => {
+      fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=8&language=fr&format=json`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (cancelled) return;
+          setResults(data.results || []);
+        })
+        .catch(() => {
+          if (!cancelled) setResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [query, open]);
+
+  return (
+    <div className="relative">
+      <input
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        className={`w-full rounded-md outline-none ${small ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm"}`}
+        style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
+      />
+      {open && (loading || results.length > 0) && (
+        <div
+          className="absolute left-0 right-0 mt-1 rounded-md overflow-y-auto"
+          style={{ background: "#0B2027", border: "1px solid #1D3A41", maxHeight: 220, zIndex: 30 }}
+        >
+          {loading && <div className="px-3 py-1.5 text-xs" style={{ color: "#7A9490" }}>Recherche…</div>}
+          {results.map((r) => {
+            const label = `${r.name}${r.admin1 ? ", " + r.admin1 : ""}`;
+            return (
+              <button
+                type="button"
+                key={r.id}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChange({ label, lat: r.latitude, lng: r.longitude });
+                  setQuery(label);
+                  setOpen(false);
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm"
+                style={{ color: "#F2E8D5" }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function JournalPeche() {
   const [session, setSession] = useState(undefined); // undefined = pas encore vérifié, null = pas connecté
   const [loginPassword, setLoginPassword] = useState("");
@@ -222,6 +350,7 @@ export default function JournalPeche() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("log");
+  const [milieu, setMilieu] = useState("salee"); // 'salee' | 'douce'
 
   const [commentaires, setCommentaires] = useState([]);
   const [openComments, setOpenComments] = useState(null); // id de la sortie dont les commentaires sont dépliés
@@ -242,6 +371,7 @@ export default function JournalPeche() {
     nbPoissons: 1,
     espece: "",
     notes: "",
+    villeDouce: null, // { label, lat, lng } pour l'onglet Eau douce
   });
 
   // Etat de la marée calculée automatiquement pour point + date + heure
@@ -256,6 +386,17 @@ export default function JournalPeche() {
   const [heurePic, setHeurePic] = useState("");
   const [tidePic, setTidePic] = useState({ status: "idle", coefficient: null, direction: null, error: null });
 
+  // Météo (eau douce) calculée automatiquement pour la ville + date + heure choisies
+  const [weather, setWeather] = useState({
+    status: "idle",
+    pression: null,
+    tendance: null,
+    temperature: null,
+    vent: null,
+    desc: null,
+    error: null,
+  });
+
   // Lieux précis de chaque prise, placés sur la carte lors de la saisie (un point par poisson)
   const [lieux, setLieux] = useState([]);
 
@@ -267,10 +408,15 @@ export default function JournalPeche() {
 
   const [predictCoef, setPredictCoef] = useState(75);
   const [predictDirection, setPredictDirection] = useState("toutes");
+  const [predictPression, setPredictPression] = useState(1013);
 
   // Prévision de la semaine : meilleurs moments à venir pour un point de pêche donné
   const [weekSpot, setWeekSpot] = useState(DEFAULT_SPOT_ID);
   const [weekTides, setWeekTides] = useState({ status: "idle", days: [], error: null });
+
+  // Idem pour l'eau douce, basé sur la pression atmosphérique d'une ville
+  const [weekVille, setWeekVille] = useState(null); // { label, lat, lng }
+  const [weekWeather, setWeekWeather] = useState({ status: "idle", days: [], error: null });
 
   // --- Authentification ---
   useEffect(() => {
@@ -312,6 +458,7 @@ export default function JournalPeche() {
     setSorties(
       (data || []).map((row) => ({
         id: row.id,
+        milieu: row.milieu || "salee",
         prenom: row.prenom,
         point: row.point,
         pointLabel: row.point_label,
@@ -328,6 +475,11 @@ export default function JournalPeche() {
         heurePic: row.heure_pic ? row.heure_pic.slice(0, 5) : row.heure_pic,
         coefPic: row.coef_pic,
         directionPic: row.direction_pic,
+        pression: row.pression,
+        pressionTendance: row.pression_tendance,
+        temperature: row.temperature,
+        vent: row.vent,
+        meteoDesc: row.meteo_desc,
         lieux: row.lieux || [],
         espece: row.espece,
         notes: row.notes,
@@ -558,6 +710,122 @@ export default function JournalPeche() {
     setLieux((pts) => (pts.length > max ? pts.slice(0, max) : pts));
   }, [form.prise, form.nbPoissons]);
 
+  // --- Récupère la météo (pression, température, vent) pour la ville + date +
+  // heure choisies (onglet Eau douce) ---
+  useEffect(() => {
+    if (milieu !== "douce") return;
+    if (!form.villeDouce) {
+      setWeather({ status: "idle", pression: null, tendance: null, temperature: null, vent: null, desc: null, error: null });
+      return;
+    }
+
+    let cancelled = false;
+    setWeather((w) => ({ ...w, status: "loading" }));
+
+    const { lat, lng } = form.villeDouce;
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&hourly=temperature_2m,pressure_msl,windspeed_10m,weathercode&timezone=Europe%2FParis&start_date=${form.date}&end_date=${form.date}`;
+
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(`http_${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const times = (data.hourly && data.hourly.time) || [];
+        if (times.length === 0) {
+          setWeather({ status: "error", pression: null, tendance: null, temperature: null, vent: null, desc: null, error: "Pas de données météo pour cette date." });
+          return;
+        }
+        const targetMin = minutesOf(form.heure);
+        let idx = 0;
+        let bestDiff = Infinity;
+        times.forEach((t, i) => {
+          const diff = Math.abs(minutesOf(t.slice(11, 16)) - targetMin);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            idx = i;
+          }
+        });
+        const pression = data.hourly.pressure_msl[idx];
+        const prevIdx = idx - 3;
+        let tendance = null;
+        if (prevIdx >= 0 && data.hourly.pressure_msl[prevIdx] != null && pression != null) {
+          const diff = pression - data.hourly.pressure_msl[prevIdx];
+          tendance = diff > 0.5 ? "hausse" : diff < -0.5 ? "baisse" : "stable";
+        }
+        setWeather({
+          status: "ok",
+          pression,
+          tendance,
+          temperature: data.hourly.temperature_2m[idx],
+          vent: data.hourly.windspeed_10m[idx],
+          desc: weatherDesc(data.hourly.weathercode[idx]),
+          error: null,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWeather({ status: "error", pression: null, tendance: null, temperature: null, vent: null, desc: null, error: "Impossible de récupérer la météo." });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [milieu, form.villeDouce, form.date, form.heure]);
+
+  // --- Récupère la météo des 7 prochains jours pour la ville choisie (onglet
+  // Eau douce, Probabilités) ---
+  useEffect(() => {
+    if (milieu !== "douce") return;
+    if (tab !== "stats") return;
+    if (!weekVille) {
+      setWeekWeather({ status: "idle", days: [], error: null });
+      return;
+    }
+
+    let cancelled = false;
+    setWeekWeather((w) => ({ ...w, status: "loading" }));
+
+    const from = new Date().toISOString().slice(0, 10);
+    const toDate = new Date();
+    toDate.setDate(toDate.getDate() + 7);
+    const to = toDate.toISOString().slice(0, 10);
+    const { lat, lng } = weekVille;
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&hourly=pressure_msl&timezone=Europe%2FParis&start_date=${from}&end_date=${to}`;
+
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(`http_${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const times = (data.hourly && data.hourly.time) || [];
+        const pressures = (data.hourly && data.hourly.pressure_msl) || [];
+        const byDate = {};
+        times.forEach((t, i) => {
+          const date = t.slice(0, 10);
+          const hhmm = t.slice(11, 16);
+          if (!WEATHER_CHECKPOINTS.includes(hhmm)) return;
+          if (!byDate[date]) byDate[date] = [];
+          byDate[date].push({ time: hhmm, pression: pressures[i] });
+        });
+        const days = Object.keys(byDate)
+          .sort()
+          .map((date) => ({ date, points: byDate[date] }));
+        setWeekWeather({ status: "ok", days, error: null });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWeekWeather({ status: "error", days: [], error: "Impossible de récupérer la météo de la semaine." });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [milieu, tab, weekVille]);
+
   // --- Récupère les marées des 7 prochains jours pour le point choisi, pour
   // repérer les meilleurs moments à venir (onglet Probabilités) ---
   useEffect(() => {
@@ -607,7 +875,10 @@ export default function JournalPeche() {
 
   const effectiveCoef = manualOverride ? Number(manualCoef) : tide.coefficient;
   const effectiveDirection = manualOverride ? manualDirection : tide.direction;
-  const canSubmit = effectiveCoef != null && !saving && !uploadingPhoto;
+  const canSubmit =
+    !saving &&
+    !uploadingPhoto &&
+    (milieu === "salee" ? effectiveCoef != null : weather.pression != null && form.villeDouce != null);
 
   function handlePhotoChange(e) {
     const file = e.target.files && e.target.files[0];
@@ -617,8 +888,9 @@ export default function JournalPeche() {
 
   async function addSortie(e) {
     e.preventDefault();
-    if (effectiveCoef == null) return;
-    const spot = findSpot(form.point);
+    if (milieu === "salee" && effectiveCoef == null) return;
+    if (milieu === "douce" && (weather.pression == null || !form.villeDouce)) return;
+    const spot = milieu === "salee" ? findSpot(form.point) : null;
     setSaving(true);
     setError(null);
 
@@ -638,22 +910,28 @@ export default function JournalPeche() {
 
     const { error: err } = await supabase.from("sorties").insert([
       {
+        milieu,
         prenom: form.prenom,
-        point: form.point,
-        point_label: spot ? spot.label : form.point,
+        point: milieu === "salee" ? form.point : form.villeDouce.label,
+        point_label: milieu === "salee" ? (spot ? spot.label : form.point) : form.villeDouce.label,
         date: form.date,
         heure: form.heure,
         heure_fin: form.heureFin || null,
-        coefficient: effectiveCoef,
-        hauteur: manualOverride ? null : tide.hauteur,
-        coef_manuel: manualOverride,
-        direction: effectiveDirection,
+        coefficient: milieu === "salee" ? effectiveCoef : null,
+        hauteur: milieu === "salee" && !manualOverride ? tide.hauteur : null,
+        coef_manuel: milieu === "salee" ? manualOverride : false,
+        direction: milieu === "salee" ? effectiveDirection : null,
         photo_url: photoUrl,
         prise: form.prise,
         nb_poissons: form.prise ? Number(form.nbPoissons) || 0 : 0,
-        heure_pic: form.prise && Number(form.nbPoissons) > 1 ? heurePic || null : null,
-        coef_pic: tidePic.status === "ok" ? tidePic.coefficient : null,
-        direction_pic: tidePic.status === "ok" ? tidePic.direction : null,
+        heure_pic: milieu === "salee" && form.prise && Number(form.nbPoissons) > 1 ? heurePic || null : null,
+        coef_pic: milieu === "salee" && tidePic.status === "ok" ? tidePic.coefficient : null,
+        direction_pic: milieu === "salee" && tidePic.status === "ok" ? tidePic.direction : null,
+        pression: milieu === "douce" ? weather.pression : null,
+        pression_tendance: milieu === "douce" ? weather.tendance : null,
+        temperature: milieu === "douce" ? weather.temperature : null,
+        vent: milieu === "douce" ? weather.vent : null,
+        meteo_desc: milieu === "douce" ? weather.desc : null,
         lieux: form.prise && lieux.length > 0 ? lieux : null,
         espece: form.espece,
         notes: form.notes,
@@ -692,11 +970,15 @@ export default function JournalPeche() {
     return [...custom, ...official];
   }, [sites]);
 
-  const filteredForStats = useMemo(() => {
+  const sortiesMilieu = useMemo(() => {
     if (!sorties) return [];
-    if (predictDirection === "toutes") return sorties;
-    return sorties.filter((s) => s.direction === predictDirection);
-  }, [sorties, predictDirection]);
+    return sorties.filter((s) => s.milieu === milieu);
+  }, [sorties, milieu]);
+
+  const filteredForStats = useMemo(() => {
+    if (predictDirection === "toutes") return sortiesMilieu;
+    return sortiesMilieu.filter((s) => s.direction === predictDirection);
+  }, [sortiesMilieu, predictDirection]);
 
   const bucketStats = useMemo(() => {
     return BUCKETS.map((b) => {
@@ -747,6 +1029,55 @@ export default function JournalPeche() {
     });
   }, [weekTides, filteredForStats]);
 
+  const pressureBucketStats = useMemo(() => {
+    return PRESSURE_BUCKETS.map((b) => {
+      const inBucket = sortiesMilieu.filter((s) => s.pression >= b.min && s.pression < b.max);
+      const prises = inBucket.filter((s) => s.prise).length;
+      const total = inBucket.length;
+      return {
+        label: b.label,
+        taux: total ? Math.round((prises / total) * 100) : 0,
+        total,
+        prises,
+      };
+    });
+  }, [sortiesMilieu]);
+
+  const predictionDouce = useMemo(() => {
+    const near = sortiesMilieu.filter((s) => s.pression != null && Math.abs(s.pression - predictPression) <= 5);
+    const prises = near.filter((s) => s.prise).length;
+    return { total: near.length, prises, taux: near.length ? Math.round((prises / near.length) * 100) : null };
+  }, [sortiesMilieu, predictPression]);
+
+  const weekRecommendationsDouce = useMemo(() => {
+    if (weekWeather.status !== "ok") return [];
+    const moments = [];
+    for (const day of weekWeather.days) {
+      for (const pt of day.points || []) {
+        if (typeof pt.pression !== "number") continue;
+        const bucket = PRESSURE_BUCKETS.find((b) => pt.pression >= b.min && pt.pression < b.max);
+        const inBucket = bucket
+          ? sortiesMilieu.filter((s) => s.pression >= bucket.min && s.pression < bucket.max)
+          : [];
+        const prises = inBucket.filter((s) => s.prise).length;
+        const total = inBucket.length;
+        moments.push({
+          date: day.date,
+          time: pt.time,
+          pression: Math.round(pt.pression),
+          taux: total ? Math.round((prises / total) * 100) : null,
+          total,
+        });
+      }
+    }
+    return moments.sort((a, b) => {
+      if (a.taux == null && b.taux == null) return 0;
+      if (a.taux == null) return 1;
+      if (b.taux == null) return -1;
+      return b.taux - a.taux || b.total - a.total;
+    });
+  }, [weekWeather, sortiesMilieu]);
+
   const commentsBySortie = useMemo(() => {
     const map = {};
     for (const c of commentaires) {
@@ -757,8 +1088,7 @@ export default function JournalPeche() {
   }, [commentaires]);
 
   const sortiesByMonth = useMemo(() => {
-    if (!sorties) return [];
-    const sorted = sorties.slice().sort((a, b) => (a.date + a.heure < b.date + b.heure ? 1 : -1));
+    const sorted = sortiesMilieu.slice().sort((a, b) => (a.date + a.heure < b.date + b.heure ? 1 : -1));
     const groups = [];
     let currentKey = null;
     for (const s of sorted) {
@@ -772,9 +1102,9 @@ export default function JournalPeche() {
       groups[groups.length - 1].items.push(s);
     }
     return groups;
-  }, [sorties]);
+  }, [sortiesMilieu]);
 
-  const totalPrises = sorties ? sorties.filter((s) => s.prise).length : 0;
+  const totalPrises = sortiesMilieu.filter((s) => s.prise).length;
 
   const sharedStyle = (
     <style>{`
@@ -856,10 +1186,31 @@ export default function JournalPeche() {
           </div>
         </header>
 
+        {/* Milieu */}
+        <div className="flex gap-2 mb-6">
+          {[
+            { id: "salee", label: "Eau salée", icon: Waves },
+            { id: "douce", label: "Eau douce", icon: Fish },
+          ].map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setMilieu(m.id)}
+              className="flex-1 rounded-lg py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors"
+              style={{
+                background: milieu === m.id ? "#3E5C50" : "#122B32",
+                color: milieu === m.id ? "#F2E8D5" : "#7A9490",
+                border: "1px solid #1D3A41",
+              }}
+            >
+              <m.icon className="w-4 h-4" /> {m.label}
+            </button>
+          ))}
+        </div>
+
         {/* Quick stat strip */}
         <div className="grid grid-cols-3 gap-3 mb-8">
           <div className="rounded-lg p-4" style={{ background: "#122B32" }}>
-            <p className="mono text-2xl font-semibold" style={{ color: "#F2E8D5" }}>{sorties ? sorties.length : "—"}</p>
+            <p className="mono text-2xl font-semibold" style={{ color: "#F2E8D5" }}>{sorties ? sortiesMilieu.length : "—"}</p>
             <p className="text-xs mt-1" style={{ color: "#7A9490" }}>sorties consignées</p>
           </div>
           <div className="rounded-lg p-4" style={{ background: "#122B32" }}>
@@ -868,7 +1219,7 @@ export default function JournalPeche() {
           </div>
           <div className="rounded-lg p-4" style={{ background: "#122B32" }}>
             <p className="mono text-2xl font-semibold" style={{ color: "#F2E8D5" }}>
-              {sorties && sorties.length ? Math.round((totalPrises / sorties.length) * 100) : "—"}%
+              {sorties && sortiesMilieu.length ? Math.round((totalPrises / sortiesMilieu.length) * 100) : "—"}%
             </p>
             <p className="text-xs mt-1" style={{ color: "#7A9490" }}>taux de réussite global</p>
           </div>
@@ -938,14 +1289,23 @@ export default function JournalPeche() {
 
             <div>
               <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>
-                <MapPin className="w-3 h-3 inline mr-1" />Point de pêche
+                <MapPin className="w-3 h-3 inline mr-1" />
+                {milieu === "salee" ? "Point de pêche" : "Ville / lieu de pêche"}
               </label>
-              <SpotPicker
-                value={form.point}
-                options={allSpots}
-                onChange={(id) => setForm((f) => ({ ...f, point: id }))}
-                placeholder="Cherche un lieu (Anse de Combrit, Bénodet…)"
-              />
+              {milieu === "salee" ? (
+                <SpotPicker
+                  value={form.point}
+                  options={allSpots}
+                  onChange={(id) => setForm((f) => ({ ...f, point: id }))}
+                  placeholder="Cherche un lieu (Anse de Combrit, Bénodet…)"
+                />
+              ) : (
+                <CitySearch
+                  value={form.villeDouce}
+                  onChange={(v) => setForm((f) => ({ ...f, villeDouce: v }))}
+                  placeholder="Cherche une ville (rivière, lac, étang…)"
+                />
+              )}
             </div>
 
             <div>
@@ -987,6 +1347,7 @@ export default function JournalPeche() {
             </div>
 
             {/* COEFFICIENT — calculé automatiquement, non modifiable */}
+            {milieu === "salee" && (
             <div>
               <div className="flex items-baseline justify-between mb-1.5">
                 <label className="eyebrow text-xs" style={{ color: "#7A9490" }}>Coefficient de marée</label>
@@ -1079,6 +1440,54 @@ export default function JournalPeche() {
                 </>
               )}
             </div>
+            )}
+
+            {/* MÉTÉO — calculée automatiquement pour la ville choisie */}
+            {milieu === "douce" && (
+              <div>
+                <div className="flex items-baseline justify-between mb-1.5">
+                  <label className="eyebrow text-xs" style={{ color: "#7A9490" }}>Météo (pression atmosphérique)</label>
+                  {weather.status === "loading" && (
+                    <span className="flex items-center gap-1.5 text-xs" style={{ color: "#7A9490" }}>
+                      <Loader2 className="w-3 h-3 animate-spin" /> calcul…
+                    </span>
+                  )}
+                </div>
+
+                <div
+                  className="w-full rounded-md px-3 py-3 flex items-center justify-between"
+                  style={{ background: "#0B2027", border: "1px solid #1D3A41" }}
+                >
+                  <span className="mono text-2xl font-semibold" style={{ color: pressureColor(weather.pression) }}>
+                    {weather.pression != null ? Math.round(weather.pression) : "—"}
+                  </span>
+                  <span className="text-xs text-right" style={{ color: "#7A9490" }}>
+                    {weather.pression != null ? pressureTag(weather.pression) : " "}
+                    {weather.tendance && (
+                      <><br />tendance {weather.tendance}</>
+                    )}
+                    {weather.temperature != null && (
+                      <><br />{weather.temperature}°C · vent {Math.round(weather.vent)} km/h</>
+                    )}
+                    {weather.desc && (
+                      <><br />{weather.desc}</>
+                    )}
+                  </span>
+                </div>
+
+                {!form.villeDouce && (
+                  <p className="text-xs mt-2 flex items-start gap-1.5" style={{ color: "#C97B3D" }}>
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                    Cherche une ville ci-dessus pour calculer la météo.
+                  </p>
+                )}
+                {weather.status === "error" && (
+                  <p className="text-xs mt-2 flex items-start gap-1.5" style={{ color: "#C97B3D" }}>
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /> {weather.error}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div>
               <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>Photo (optionnel)</label>
@@ -1140,7 +1549,7 @@ export default function JournalPeche() {
                   />
                 </div>
               )}
-              {form.prise && Number(form.nbPoissons) > 1 && (
+              {milieu === "salee" && form.prise && Number(form.nbPoissons) > 1 && (
                 <div className="mt-3">
                   <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>
                     <Clock className="w-3 h-3 inline mr-1" />Heure du pic d'activité
@@ -1179,7 +1588,7 @@ export default function JournalPeche() {
                   Clique sur la carte à l'endroit de chaque prise. Clique sur un point pour le retirer.
                 </p>
                 <CatchMap
-                  center={resolveSiteCoords(form.point)}
+                  center={milieu === "salee" ? resolveSiteCoords(form.point) : form.villeDouce ? [form.villeDouce.lat, form.villeDouce.lng] : ESTUAIRE_CENTER}
                   points={lieux}
                   interactive
                   onAddPoint={(lat, lng) => {
@@ -1235,7 +1644,7 @@ export default function JournalPeche() {
                       <div
                         key={s.id}
                         className="rounded-lg p-4 flex flex-col gap-3"
-                        style={{ background: "#122B32", borderLeft: `3px solid ${coefColor(s.coefficient)}` }}
+                        style={{ background: "#122B32", borderLeft: `3px solid ${s.milieu === "douce" ? pressureColor(s.pression) : coefColor(s.coefficient)}` }}
                       >
                         <div
                           className="flex items-center justify-between gap-3 cursor-pointer"
@@ -1283,12 +1692,20 @@ export default function JournalPeche() {
                                   pic {s.heurePic}{s.coefPic != null ? ` · coef ${s.coefPic}` : ""}
                                 </span>
                               )}
+                              {s.milieu === "douce" && s.pression != null && (
+                                <span className="text-xs" style={{ color: "#6FA8AE" }}>
+                                  {s.pressionTendance ? `tendance ${s.pressionTendance}` : ""}
+                                  {s.temperature != null ? ` · ${s.temperature}°C` : ""}
+                                  {s.vent != null ? ` · vent ${Math.round(s.vent)} km/h` : ""}
+                                  {s.meteoDesc ? ` · ${s.meteoDesc}` : ""}
+                                </span>
+                              )}
                             </div>
                             {s.notes && <p className="text-sm truncate" style={{ color: "#C7D3D0" }}>{s.notes}</p>}
                           </div>
                           <div className="flex items-center gap-3 shrink-0">
-                            <span className="mono text-lg font-semibold" style={{ color: coefColor(s.coefficient) }}>
-                              {s.coefficient}
+                            <span className="mono text-lg font-semibold" style={{ color: s.milieu === "douce" ? pressureColor(s.pression) : coefColor(s.coefficient) }}>
+                              {s.milieu === "douce" ? (s.pression != null ? Math.round(s.pression) : "—") : s.coefficient}
                             </span>
                             <button
                               onClick={(e) => {
@@ -1413,20 +1830,34 @@ export default function JournalPeche() {
               )}
 
               <div className="flex flex-wrap gap-3 text-xs" style={{ color: "#C7D3D0" }}>
-                <span className="mono" style={{ color: coefColor(detailSortie.coefficient) }}>coef {detailSortie.coefficient}</span>
-                {detailSortie.direction && <span>marée {detailSortie.direction}</span>}
-                {detailSortie.hauteur != null && <span>hauteur {detailSortie.hauteur.toFixed(2)} m</span>}
+                {detailSortie.milieu === "douce" ? (
+                  <>
+                    <span className="mono" style={{ color: pressureColor(detailSortie.pression) }}>
+                      {detailSortie.pression != null ? `${Math.round(detailSortie.pression)} hPa` : "pression inconnue"}
+                    </span>
+                    {detailSortie.pressionTendance && <span>tendance {detailSortie.pressionTendance}</span>}
+                    {detailSortie.temperature != null && <span>{detailSortie.temperature}°C</span>}
+                    {detailSortie.vent != null && <span>vent {Math.round(detailSortie.vent)} km/h</span>}
+                    {detailSortie.meteoDesc && <span>{detailSortie.meteoDesc}</span>}
+                  </>
+                ) : (
+                  <>
+                    <span className="mono" style={{ color: coefColor(detailSortie.coefficient) }}>coef {detailSortie.coefficient}</span>
+                    {detailSortie.direction && <span>marée {detailSortie.direction}</span>}
+                    {detailSortie.hauteur != null && <span>hauteur {detailSortie.hauteur.toFixed(2)} m</span>}
+                    {detailSortie.heurePic && (
+                      <span style={{ color: "#C97B3D" }}>
+                        pic {detailSortie.heurePic}{detailSortie.coefPic != null ? ` · coef ${detailSortie.coefPic}` : ""}
+                      </span>
+                    )}
+                  </>
+                )}
                 {detailSortie.prise ? (
                   <span className="flex items-center gap-1" style={{ color: "#7FA37A" }}>
                     <Fish className="w-3 h-3" /> {detailSortie.nbPoissons ? `${detailSortie.nbPoissons}× ` : ""}{detailSortie.espece || "prise"}
                   </span>
                 ) : (
                   <span style={{ color: "#8C7355" }}>bredouille</span>
-                )}
-                {detailSortie.heurePic && (
-                  <span style={{ color: "#C97B3D" }}>
-                    pic {detailSortie.heurePic}{detailSortie.coefPic != null ? ` · coef ${detailSortie.coefPic}` : ""}
-                  </span>
                 )}
               </div>
 
@@ -1452,7 +1883,7 @@ export default function JournalPeche() {
         )}
 
         {/* STATS */}
-        {sorties !== null && tab === "stats" && (
+        {sorties !== null && tab === "stats" && milieu === "salee" && (
           <div className="space-y-8">
             <div className="flex gap-2">
               {[
@@ -1591,6 +2022,131 @@ export default function JournalPeche() {
                   {predictDirection !== "toutes" ? ` en marée ${predictDirection}` : ""}, vous avez ramené du poisson{" "}
                   <span className="mono font-semibold" style={{ color: "#7FA37A" }}>{prediction.taux}%</span> du temps
                   ({prediction.prises}/{prediction.total}).
+                </p>
+              ) : (
+                <p className="text-sm" style={{ color: "#7A9490" }}>
+                  Aucune sortie enregistrée dans ces conditions pour l'instant. Plus vous consignez de sorties (même bredouilles), plus la proba sera fiable.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* STATS — EAU DOUCE */}
+        {sorties !== null && tab === "stats" && milieu === "douce" && (
+          <div className="space-y-8">
+            <div className="rounded-lg p-5" style={{ background: "#122B32" }}>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <p className="eyebrow text-xs" style={{ color: "#7A9490" }}>
+                  Meilleurs moments cette semaine
+                </p>
+                <div style={{ width: 200 }}>
+                  <CitySearch value={weekVille} onChange={setWeekVille} placeholder="Ville…" small />
+                </div>
+              </div>
+
+              {!weekVille && (
+                <p className="text-xs" style={{ color: "#7A9490" }}>Cherche une ville pour voir la météo à venir.</p>
+              )}
+              {weekWeather.status === "loading" && (
+                <p className="text-xs flex items-center gap-1.5" style={{ color: "#7A9490" }}>
+                  <Loader2 className="w-3 h-3 animate-spin" /> calcul de la météo de la semaine…
+                </p>
+              )}
+              {weekWeather.status === "error" && (
+                <p className="text-xs flex items-start gap-1.5" style={{ color: "#C97B3D" }}>
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /> {weekWeather.error}
+                </p>
+              )}
+
+              {weekWeather.status === "ok" && weekRecommendationsDouce.length > 0 && (
+                <>
+                  {weekRecommendationsDouce[0].taux != null ? (
+                    <div className="rounded-md p-3 mb-3" style={{ background: "#0B2027", border: "1px solid #1D3A41" }}>
+                      <p className="text-xs mb-1" style={{ color: "#7A9490" }}>Meilleur moment prévu</p>
+                      <p className="text-sm" style={{ color: "#C7D3D0" }}>
+                        <span className="mono font-semibold" style={{ color: "#F2E8D5" }}>
+                          {formatDayLabel(weekRecommendationsDouce[0].date)} vers {weekRecommendationsDouce[0].time}
+                        </span>{" "}
+                        · <span className="mono" style={{ color: pressureColor(weekRecommendationsDouce[0].pression) }}>{weekRecommendationsDouce[0].pression} hPa</span>{" "}
+                        · <span className="mono font-semibold" style={{ color: "#7FA37A" }}>{weekRecommendationsDouce[0].taux}%</span> de réussite historique
+                        sur {weekRecommendationsDouce[0].total} sortie(s) similaire(s).
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs mb-3" style={{ color: "#7A9490" }}>
+                      Pas encore assez de sorties enregistrées à des pressions comparables pour prédire le meilleur moment.
+                    </p>
+                  )}
+                  <div className="space-y-1.5">
+                    {weekRecommendationsDouce.map((m, i) => (
+                      <div key={`${m.date}-${m.time}`} className="flex items-center justify-between text-xs px-2 py-1.5 rounded" style={{ background: i === 0 ? "rgba(201,123,61,0.12)" : "transparent" }}>
+                        <span style={{ color: "#C7D3D0" }}>{formatDayLabel(m.date)} · {m.time}</span>
+                        <span className="flex items-center gap-2">
+                          <span className="mono" style={{ color: pressureColor(m.pression) }}>{m.pression} hPa</span>
+                          <span className="mono" style={{ color: m.taux != null ? "#7FA37A" : "#5A6E6A" }}>
+                            {m.taux != null ? `${m.taux}%` : "—"}
+                          </span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="rounded-lg p-5" style={{ background: "#122B32" }}>
+              <p className="eyebrow text-xs mb-3" style={{ color: "#7A9490" }}>
+                Taux de réussite par pression
+              </p>
+              {sortiesMilieu.length === 0 ? (
+                <p className="text-sm" style={{ color: "#7A9490" }}>Pas encore assez de données.</p>
+              ) : (
+                <div style={{ width: "100%", height: 220 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={pressureBucketStats}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1D3A41" />
+                      <XAxis dataKey="label" tick={{ fill: "#7A9490", fontSize: 11 }} />
+                      <YAxis tick={{ fill: "#7A9490", fontSize: 11 }} unit="%" width={40} />
+                      <Tooltip
+                        contentStyle={{ background: "#0B2027", border: "1px solid #1D3A41", borderRadius: 8 }}
+                        labelStyle={{ color: "#F2E8D5" }}
+                        formatter={(v, n, p) => [`${v}% (${p.payload.prises}/${p.payload.total})`, "taux de prise"]}
+                      />
+                      <Bar dataKey="taux" radius={[4, 4, 0, 0]}>
+                        {pressureBucketStats.map((b, i) => (
+                          <Cell key={i} fill={pressureColor((PRESSURE_BUCKETS[i].min + PRESSURE_BUCKETS[i].max) / 2)} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg p-5" style={{ background: "#122B32" }}>
+              <p className="eyebrow text-xs mb-3" style={{ color: "#7A9490" }}>
+                Tu prévois de sortir avec quelle pression ?
+              </p>
+              <div className="flex items-baseline justify-between mb-2">
+                <span className="mono text-2xl font-semibold" style={{ color: pressureColor(predictPression) }}>
+                  {predictPression}
+                </span>
+                <span className="text-xs" style={{ color: "#7A9490" }}>{pressureTag(predictPression)}</span>
+              </div>
+              <input
+                type="range"
+                min="980"
+                max="1040"
+                value={predictPression}
+                onChange={(e) => setPredictPression(Number(e.target.value))}
+                className="w-full mb-4"
+              />
+              {predictionDouce && predictionDouce.total > 0 ? (
+                <p className="text-sm" style={{ color: "#C7D3D0" }}>
+                  Sur <span className="mono">{predictionDouce.total}</span> sortie(s) à une pression proche (± 5 hPa), vous avez ramené du poisson{" "}
+                  <span className="mono font-semibold" style={{ color: "#7FA37A" }}>{predictionDouce.taux}%</span> du temps
+                  ({predictionDouce.prises}/{predictionDouce.total}).
                 </p>
               ) : (
                 <p className="text-sm" style={{ color: "#7A9490" }}>

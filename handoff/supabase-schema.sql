@@ -2,22 +2,28 @@
 
 create table sorties (
   id uuid primary key default gen_random_uuid(),
+  milieu text default 'salee', -- 'salee' | 'douce'
   prenom text not null,
   point text,
   point_label text,
   date date not null,
   heure time not null,
   heure_fin time,
-  coefficient int not null,
+  coefficient int, -- mer uniquement
   hauteur numeric,
   coef_manuel boolean default false,
-  direction text, -- 'montante' | 'descendante' | null
+  direction text, -- 'montante' | 'descendante' | null (mer uniquement)
   photo_url text,
   prise boolean not null,
   nb_poissons int default 0,
-  heure_pic time, -- heure du pic d'activité si plusieurs poissons pris
+  heure_pic time, -- heure du pic d'activité si plusieurs poissons pris (mer uniquement)
   coef_pic int,
-  direction_pic text, -- 'montante' | 'descendante' | null
+  direction_pic text, -- 'montante' | 'descendante' | null (mer uniquement)
+  pression numeric, -- eau douce uniquement (hPa, pression au niveau de la mer)
+  pression_tendance text, -- 'hausse' | 'baisse' | 'stable' | null
+  temperature numeric,
+  vent numeric, -- km/h
+  meteo_desc text,
   lieux jsonb, -- tableau [{lat, lng}, ...], un point par poisson pris
   espece text,
   notes text,
@@ -102,3 +108,15 @@ create policy "authenticated can delete photos"
 -- ⤵ Si la table "sorties" existe déjà (installation faite avant l'ajout des
 -- commentaires), lance plutôt le bloc "commentaires" ci-dessus (create table +
 -- RLS + policy + realtime) seul, la table "sorties" n'a pas besoin de changer.
+
+-- ⤵ Si la table "sorties" existe déjà (installation faite avant l'ajout de
+-- l'onglet Eau douce), lance plutôt ce bloc seul : le coefficient de marée
+-- n'est plus obligatoire (les sorties eau douce n'en ont pas), et les colonnes
+-- météo sont ajoutées.
+-- alter table sorties alter column coefficient drop not null;
+-- alter table sorties add column if not exists milieu text default 'salee';
+-- alter table sorties add column if not exists pression numeric;
+-- alter table sorties add column if not exists pression_tendance text;
+-- alter table sorties add column if not exists temperature numeric;
+-- alter table sorties add column if not exists vent numeric;
+-- alter table sorties add column if not exists meteo_desc text;
