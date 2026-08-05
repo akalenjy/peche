@@ -1,12 +1,26 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { Fish, Waves, Clock, Anchor, ExternalLink, Trash2, Loader2, Plus, TrendingUp, MapPin, Settings, AlertTriangle, LogOut } from "lucide-react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
+
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
+});
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
+
+const ESTUAIRE_CENTER = [47.87, -4.1];
 
 const API_KEY_STORAGE = "api-maree-key";
 const DEFAULT_API_KEY = "d7581cbfad1d5f81245ddbdb304ce653";
@@ -57,6 +71,12 @@ function minutesOf(hhmm) {
   return h * 60 + m;
 }
 
+function formatDayLabel(dateStr) {
+  const d = new Date(`${dateStr}T12:00:00`);
+  const label = d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "short" });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
 // Détermine si la marée monte ou descend à l'heure donnée, à partir de la liste
 // complète des pleines mers / basses mers (PM/BM) du jour.
 function computeDirection(extrema, targetMin) {
@@ -74,6 +94,65 @@ function computeDirection(extrema, targetMin) {
   const last = sorted[sorted.length - 1];
   if (targetMin < minutesOf(first.time)) return first.type === "PM" ? "montante" : "descendante";
   return last.type === "PM" ? "descendante" : "montante";
+}
+
+// Carte Leaflet réutilisable : interactive (clic pour ajouter un point) en mode
+// saisie, ou juste affichage de marqueurs (avec cadrage auto) en mode consultation.
+function CatchMap({ center, points, onAddPoint, onRemovePoint, interactive, height = 220 }) {
+  const containerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef([]);
+  const onAddPointRef = useRef(onAddPoint);
+  const onRemovePointRef = useRef(onRemovePoint);
+  onAddPointRef.current = onAddPoint;
+  onRemovePointRef.current = onRemovePoint;
+
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+    const map = L.map(containerRef.current).setView(center, 13);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map);
+    if (interactive) {
+      map.on("click", (e) => {
+        if (onAddPointRef.current) onAddPointRef.current(e.latlng.lat, e.latlng.lng);
+      });
+    }
+    mapRef.current = map;
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    mapRef.current.setView(center);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [center[0], center[1]]);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    markersRef.current.forEach((m) => m.remove());
+    markersRef.current = (points || []).map((p, i) => {
+      const marker = L.marker([p.lat, p.lng]).addTo(mapRef.current);
+      if (p.label) marker.bindPopup(p.label);
+      if (interactive) {
+        marker.on("click", (e) => {
+          L.DomEvent.stopPropagation(e);
+          if (onRemovePointRef.current) onRemovePointRef.current(i);
+        });
+      }
+      return marker;
+    });
+    if (!interactive && points && points.length > 0) {
+      mapRef.current.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lng])), { padding: [30, 30], maxZoom: 15 });
+    }
+  }, [points, interactive]);
+
+  return <div ref={containerRef} style={{ height, width: "100%", borderRadius: 8 }} />;
 }
 
 export default function JournalPeche() {
@@ -115,6 +194,9 @@ export default function JournalPeche() {
   const [heurePic, setHeurePic] = useState("");
   const [tidePic, setTidePic] = useState({ status: "idle", coefficient: null, direction: null, error: null });
 
+  // Lieux précis de chaque prise, placés sur la carte lors de la saisie (un point par poisson)
+  const [lieux, setLieux] = useState([]);
+
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -122,6 +204,10 @@ export default function JournalPeche() {
 
   const [predictCoef, setPredictCoef] = useState(75);
   const [predictDirection, setPredictDirection] = useState("toutes");
+
+  // Prévision de la semaine : meilleurs moments à venir pour un point de pêche donné
+  const [weekSpot, setWeekSpot] = useState(SPOTS[0].key);
+  const [weekTides, setWeekTides] = useState({ status: "idle", days: [], error: null });
 
   // --- Authentification ---
   useEffect(() => {
@@ -179,6 +265,7 @@ export default function JournalPeche() {
         heurePic: row.heure_pic ? row.heure_pic.slice(0, 5) : row.heure_pic,
         coefPic: row.coef_pic,
         directionPic: row.direction_pic,
+        lieux: row.lieux || [],
         espece: row.espece,
         notes: row.notes,
       }))
@@ -228,6 +315,14 @@ export default function JournalPeche() {
     const q = spot.siteQuery.toLowerCase();
     const found = sites.find((s) => (s.site_name || "").toLowerCase().includes(q));
     return found ? found.site_id : null;
+  }
+
+  function resolveSiteCoords(spotKey) {
+    const spot = SPOTS.find((s) => s.key === spotKey);
+    if (!spot || !sites || sites.length === 0) return ESTUAIRE_CENTER;
+    const q = spot.siteQuery.toLowerCase();
+    const found = sites.find((s) => (s.site_name || "").toLowerCase().includes(q));
+    return found ? [found.latitude, found.longitude] : ESTUAIRE_CENTER;
   }
 
   // --- Récupère les pleines mers / basses mers + coefficients pour le point + la date choisis ---
@@ -358,6 +453,59 @@ export default function JournalPeche() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heurePic, form.point, form.date, apiKey, sites]);
 
+  // Le nombre de points sur la carte ne peut pas dépasser le nombre de poissons pris
+  useEffect(() => {
+    const max = form.prise ? Math.max(1, Number(form.nbPoissons) || 1) : 0;
+    setLieux((pts) => (pts.length > max ? pts.slice(0, max) : pts));
+  }, [form.prise, form.nbPoissons]);
+
+  // --- Récupère les marées des 7 prochains jours pour le point choisi, pour
+  // repérer les meilleurs moments à venir (onglet Probabilités) ---
+  useEffect(() => {
+    if (tab !== "stats") return;
+    if (!sites) return;
+    if (!apiKey) {
+      setWeekTides({ status: "no_key", days: [], error: null });
+      return;
+    }
+    const siteId = resolveSiteId(weekSpot);
+    if (!siteId) {
+      setWeekTides({ status: "error", days: [], error: "Site introuvable pour ce point de pêche." });
+      return;
+    }
+
+    let cancelled = false;
+    setWeekTides((w) => ({ ...w, status: "loading" }));
+
+    const from = new Date().toISOString().slice(0, 10);
+    const toDate = new Date();
+    toDate.setDate(toDate.getDate() + 7);
+    const to = toDate.toISOString().slice(0, 10);
+    const url = `https://api-maree.fr/tide-extrema?site=${encodeURIComponent(siteId)}&from=${from}&to=${to}&tz=Europe/Paris&key=${encodeURIComponent(apiKey)}`;
+
+    fetch(url)
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `http_${res.status}`);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setWeekTides({ status: "ok", days: data.data || [], error: null });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWeekTides({ status: "error", days: [], error: "Impossible de récupérer les marées de la semaine." });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, weekSpot, apiKey, sites]);
+
   const effectiveCoef = manualOverride ? Number(manualCoef) : tide.coefficient;
   const effectiveDirection = manualOverride ? manualDirection : tide.direction;
   const canSubmit = effectiveCoef != null && !saving && !uploadingPhoto;
@@ -407,6 +555,7 @@ export default function JournalPeche() {
         heure_pic: form.prise && Number(form.nbPoissons) > 1 ? heurePic || null : null,
         coef_pic: tidePic.status === "ok" ? tidePic.coefficient : null,
         direction_pic: tidePic.status === "ok" ? tidePic.direction : null,
+        lieux: form.prise && lieux.length > 0 ? lieux : null,
         espece: form.espece,
         notes: form.notes,
       },
@@ -418,6 +567,7 @@ export default function JournalPeche() {
     }
     setForm((f) => ({ ...f, espece: "", notes: "", nbPoissons: 1 }));
     setHeurePic("");
+    setLieux([]);
     setPhotoFile(null);
     setPhotoPreview(null);
     loadSorties();
@@ -457,6 +607,46 @@ export default function JournalPeche() {
     const prises = near.filter((s) => s.prise).length;
     return { total: near.length, prises, taux: near.length ? Math.round((prises / near.length) * 100) : null };
   }, [filteredForStats, predictCoef]);
+
+  const weekRecommendations = useMemo(() => {
+    if (weekTides.status !== "ok") return [];
+    const moments = [];
+    for (const day of weekTides.days) {
+      for (const e of day.extrema || []) {
+        if (typeof e.coef !== "number") continue;
+        const bucket = BUCKETS.find((b) => e.coef >= b.min && e.coef < b.max);
+        const inBucket = bucket
+          ? filteredForStats.filter((s) => s.coefficient >= bucket.min && s.coefficient < bucket.max)
+          : [];
+        const prises = inBucket.filter((s) => s.prise).length;
+        const total = inBucket.length;
+        moments.push({
+          date: day.date,
+          time: e.time,
+          coef: e.coef,
+          taux: total ? Math.round((prises / total) * 100) : null,
+          total,
+        });
+      }
+    }
+    return moments.sort((a, b) => {
+      if (a.taux == null && b.taux == null) return 0;
+      if (a.taux == null) return 1;
+      if (b.taux == null) return -1;
+      return b.taux - a.taux || b.total - a.total;
+    });
+  }, [weekTides, filteredForStats]);
+
+  const catchPoints = useMemo(() => {
+    if (!sorties) return [];
+    const pts = [];
+    for (const s of sorties) {
+      for (const p of s.lieux || []) {
+        pts.push({ lat: p.lat, lng: p.lng, label: `${s.prenom} · ${s.espece || "poisson"} · ${s.date}` });
+      }
+    }
+    return pts;
+  }, [sorties]);
 
   const totalPrises = sorties ? sorties.filter((s) => s.prise).length : 0;
 
@@ -880,6 +1070,28 @@ export default function JournalPeche() {
               )}
             </div>
 
+            {form.prise && (
+              <div>
+                <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>
+                  <MapPin className="w-3 h-3 inline mr-1" />
+                  Lieu(x) de prise ({lieux.length}/{Math.max(1, Number(form.nbPoissons) || 1)})
+                </label>
+                <p className="text-xs mb-1.5" style={{ color: "#7A9490" }}>
+                  Clique sur la carte à l'endroit de chaque prise. Clique sur un point pour le retirer.
+                </p>
+                <CatchMap
+                  center={resolveSiteCoords(form.point)}
+                  points={lieux}
+                  interactive
+                  onAddPoint={(lat, lng) => {
+                    const max = Math.max(1, Number(form.nbPoissons) || 1);
+                    setLieux((pts) => (pts.length >= max ? pts : [...pts, { lat, lng }]));
+                  }}
+                  onRemovePoint={(i) => setLieux((pts) => pts.filter((_, idx) => idx !== i))}
+                />
+              </div>
+            )}
+
             <div>
               <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>Notes</label>
               <textarea
@@ -906,6 +1118,7 @@ export default function JournalPeche() {
 
         {/* HISTORY */}
         {sorties !== null && tab === "history" && (
+          <>
           <div className="space-y-2">
             {sorties.length === 0 && (
               <p className="text-sm text-center py-10" style={{ color: "#7A9490" }}>
@@ -974,6 +1187,18 @@ export default function JournalPeche() {
                 </div>
               ))}
           </div>
+
+          <div className="rounded-lg p-5 mt-8" style={{ background: "#122B32" }}>
+            <p className="eyebrow text-xs mb-3" style={{ color: "#7A9490" }}>
+              Carte des lieux de prise
+            </p>
+            {catchPoints.length === 0 ? (
+              <p className="text-sm" style={{ color: "#7A9490" }}>Aucun lieu de prise enregistré pour l'instant.</p>
+            ) : (
+              <CatchMap center={ESTUAIRE_CENTER} points={catchPoints} interactive={false} height={320} />
+            )}
+          </div>
+          </>
         )}
 
         {lightbox && (
@@ -1008,6 +1233,76 @@ export default function JournalPeche() {
                   {d.label}
                 </button>
               ))}
+            </div>
+
+            <div className="rounded-lg p-5" style={{ background: "#122B32" }}>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <p className="eyebrow text-xs" style={{ color: "#7A9490" }}>
+                  Meilleurs moments cette semaine
+                </p>
+                <select
+                  value={weekSpot}
+                  onChange={(e) => setWeekSpot(e.target.value)}
+                  className="text-xs rounded-md px-2 py-1 outline-none"
+                  style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
+                >
+                  {SPOTS.map((s) => (
+                    <option key={s.key} value={s.key}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {weekTides.status === "no_key" && (
+                <p className="text-xs flex items-start gap-1.5" style={{ color: "#C97B3D" }}>
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  Ajoute ta clé API (⚙️ en haut) pour voir les marées à venir.
+                </p>
+              )}
+              {weekTides.status === "loading" && (
+                <p className="text-xs flex items-center gap-1.5" style={{ color: "#7A9490" }}>
+                  <Loader2 className="w-3 h-3 animate-spin" /> calcul des marées de la semaine…
+                </p>
+              )}
+              {weekTides.status === "error" && (
+                <p className="text-xs flex items-start gap-1.5" style={{ color: "#C97B3D" }}>
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /> {weekTides.error}
+                </p>
+              )}
+
+              {weekTides.status === "ok" && weekRecommendations.length > 0 && (
+                <>
+                  {weekRecommendations[0].taux != null ? (
+                    <div className="rounded-md p-3 mb-3" style={{ background: "#0B2027", border: "1px solid #1D3A41" }}>
+                      <p className="text-xs mb-1" style={{ color: "#7A9490" }}>Meilleur moment prévu</p>
+                      <p className="text-sm" style={{ color: "#C7D3D0" }}>
+                        <span className="mono font-semibold" style={{ color: "#F2E8D5" }}>
+                          {formatDayLabel(weekRecommendations[0].date)} vers {weekRecommendations[0].time}
+                        </span>{" "}
+                        · coef <span className="mono" style={{ color: coefColor(weekRecommendations[0].coef) }}>{weekRecommendations[0].coef}</span>{" "}
+                        · <span className="mono font-semibold" style={{ color: "#7FA37A" }}>{weekRecommendations[0].taux}%</span> de réussite historique
+                        {predictDirection !== "toutes" ? ` en marée ${predictDirection}` : ""} sur {weekRecommendations[0].total} sortie(s) similaire(s).
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs mb-3" style={{ color: "#7A9490" }}>
+                      Pas encore assez de sorties enregistrées à des coefficients comparables pour prédire le meilleur moment.
+                    </p>
+                  )}
+                  <div className="space-y-1.5">
+                    {weekRecommendations.map((m, i) => (
+                      <div key={`${m.date}-${m.time}`} className="flex items-center justify-between text-xs px-2 py-1.5 rounded" style={{ background: i === 0 ? "rgba(201,123,61,0.12)" : "transparent" }}>
+                        <span style={{ color: "#C7D3D0" }}>{formatDayLabel(m.date)} · {m.time}</span>
+                        <span className="flex items-center gap-2">
+                          <span className="mono" style={{ color: coefColor(m.coef) }}>coef {m.coef}</span>
+                          <span className="mono" style={{ color: m.taux != null ? "#7FA37A" : "#5A6E6A" }}>
+                            {m.taux != null ? `${m.taux}%` : "—"}
+                          </span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="rounded-lg p-5" style={{ background: "#122B32" }}>

@@ -18,6 +18,7 @@ create table sorties (
   heure_pic time, -- heure du pic d'activité si plusieurs poissons pris
   coef_pic int,
   direction_pic text, -- 'montante' | 'descendante' | null
+  lieux jsonb, -- tableau [{lat, lng}, ...], un point par poisson pris
   espece text,
   notes text,
   created_at timestamptz default now()
@@ -74,3 +75,7 @@ create policy "authenticated can delete photos"
 -- alter table sorties add column if not exists heure_pic time;
 -- alter table sorties add column if not exists coef_pic int;
 -- alter table sorties add column if not exists direction_pic text;
+
+-- ⤵ Si la table "sorties" existe déjà (installation faite avant l'ajout de la
+-- carte des lieux de prise), lance plutôt cette ligne seule :
+-- alter table sorties add column if not exists lieux jsonb;
