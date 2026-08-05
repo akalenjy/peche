@@ -679,17 +679,6 @@ export default function JournalPeche() {
     });
   }, [weekTides, filteredForStats]);
 
-  const catchPoints = useMemo(() => {
-    if (!sorties) return [];
-    const pts = [];
-    for (const s of sorties) {
-      for (const p of s.lieux || []) {
-        pts.push({ lat: p.lat, lng: p.lng, label: `${s.prenom} · ${s.espece || "poisson"} · ${s.date}` });
-      }
-    }
-    return pts;
-  }, [sorties]);
-
   const commentsBySortie = useMemo(() => {
     const map = {};
     for (const c of commentaires) {
@@ -1316,17 +1305,6 @@ export default function JournalPeche() {
                 </div>
               </div>
             ))}
-          </div>
-
-          <div className="rounded-lg p-5 mt-8" style={{ background: "#122B32" }}>
-            <p className="eyebrow text-xs mb-3" style={{ color: "#7A9490" }}>
-              Carte des lieux de prise
-            </p>
-            {catchPoints.length === 0 ? (
-              <p className="text-sm" style={{ color: "#7A9490" }}>Aucun lieu de prise enregistré pour l'instant.</p>
-            ) : (
-              <CatchMap center={ESTUAIRE_CENTER} points={catchPoints} interactive={false} height={320} />
-            )}
           </div>
           </>
         )}
