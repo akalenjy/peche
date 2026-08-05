@@ -15,6 +15,9 @@ create table sorties (
   photo_url text,
   prise boolean not null,
   nb_poissons int default 0,
+  heure_pic time, -- heure du pic d'activité si plusieurs poissons pris
+  coef_pic int,
+  direction_pic text, -- 'montante' | 'descendante' | null
   espece text,
   notes text,
   created_at timestamptz default now()
@@ -65,3 +68,9 @@ create policy "authenticated can delete photos"
 -- l'heure de fin et du nombre de poissons), lance plutôt ces deux lignes seules :
 -- alter table sorties add column if not exists heure_fin time;
 -- alter table sorties add column if not exists nb_poissons int default 0;
+
+-- ⤵ Si la table "sorties" existe déjà (installation faite avant l'ajout du
+-- pic d'activité), lance plutôt ces trois lignes seules :
+-- alter table sorties add column if not exists heure_pic time;
+-- alter table sorties add column if not exists coef_pic int;
+-- alter table sorties add column if not exists direction_pic text;

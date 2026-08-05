@@ -110,6 +110,11 @@ export default function JournalPeche() {
   const [manualCoef, setManualCoef] = useState(75);
   const [manualDirection, setManualDirection] = useState("montante");
 
+  // Heure du pic d'activité (si plusieurs poissons pris) + marée calculée à ce moment,
+  // indépendamment du calcul principal basé sur l'heure de début.
+  const [heurePic, setHeurePic] = useState("");
+  const [tidePic, setTidePic] = useState({ status: "idle", coefficient: null, direction: null, error: null });
+
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -171,6 +176,9 @@ export default function JournalPeche() {
         photoUrl: row.photo_url,
         prise: row.prise,
         nbPoissons: row.nb_poissons,
+        heurePic: row.heure_pic ? row.heure_pic.slice(0, 5) : row.heure_pic,
+        coefPic: row.coef_pic,
+        directionPic: row.direction_pic,
         espece: row.espece,
         notes: row.notes,
       }))
@@ -297,6 +305,59 @@ export default function JournalPeche() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.point, form.date, form.heure, apiKey, sites, manualOverride]);
 
+  // --- Recalcule la marée au moment précis du pic d'activité (indépendant du
+  // calcul principal, qui reste basé sur l'heure de début de la sortie) ---
+  useEffect(() => {
+    if (!heurePic) {
+      setTidePic({ status: "idle", coefficient: null, direction: null, error: null });
+      return;
+    }
+    if (!sites) return;
+    if (!apiKey) {
+      setTidePic({ status: "no_key", coefficient: null, direction: null, error: null });
+      return;
+    }
+    const siteId = resolveSiteId(form.point);
+    if (!siteId) {
+      setTidePic({ status: "error", coefficient: null, direction: null, error: "Site introuvable pour ce point de pêche." });
+      return;
+    }
+
+    let cancelled = false;
+    setTidePic((t) => ({ ...t, status: "loading" }));
+
+    fetchExtrema(siteId, form.date)
+      .then((extrema) => {
+        if (cancelled) return;
+        const withCoef = extrema.filter((e) => typeof e.coef === "number");
+        if (withCoef.length === 0) {
+          setTidePic({ status: "error", coefficient: null, direction: null, error: "Pas de coefficient renvoyé pour cette date." });
+          return;
+        }
+        const targetMin = minutesOf(heurePic);
+        let nearest = withCoef[0];
+        let bestDiff = Infinity;
+        for (const e of withCoef) {
+          const diff = Math.abs(minutesOf(e.time) - targetMin);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            nearest = e;
+          }
+        }
+        const direction = computeDirection(extrema, targetMin);
+        setTidePic({ status: "ok", coefficient: nearest.coef, direction, error: null });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTidePic({ status: "error", coefficient: null, direction: null, error: "Impossible de récupérer la marée au pic." });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heurePic, form.point, form.date, apiKey, sites]);
+
   const effectiveCoef = manualOverride ? Number(manualCoef) : tide.coefficient;
   const effectiveDirection = manualOverride ? manualDirection : tide.direction;
   const canSubmit = effectiveCoef != null && !saving && !uploadingPhoto;
@@ -343,6 +404,9 @@ export default function JournalPeche() {
         photo_url: photoUrl,
         prise: form.prise,
         nb_poissons: form.prise ? Number(form.nbPoissons) || 0 : 0,
+        heure_pic: form.prise && Number(form.nbPoissons) > 1 ? heurePic || null : null,
+        coef_pic: tidePic.status === "ok" ? tidePic.coefficient : null,
+        direction_pic: tidePic.status === "ok" ? tidePic.direction : null,
         espece: form.espece,
         notes: form.notes,
       },
@@ -353,6 +417,7 @@ export default function JournalPeche() {
       return;
     }
     setForm((f) => ({ ...f, espece: "", notes: "", nbPoissons: 1 }));
+    setHeurePic("");
     setPhotoFile(null);
     setPhotoPreview(null);
     loadSorties();
@@ -786,6 +851,33 @@ export default function JournalPeche() {
                   />
                 </div>
               )}
+              {form.prise && Number(form.nbPoissons) > 1 && (
+                <div className="mt-3">
+                  <label className="eyebrow text-xs block mb-1.5" style={{ color: "#7A9490" }}>
+                    <Clock className="w-3 h-3 inline mr-1" />Heure du pic d'activité
+                  </label>
+                  <input
+                    type="time"
+                    value={heurePic}
+                    onChange={(e) => setHeurePic(e.target.value)}
+                    className="w-full rounded-md px-3 py-2 text-sm mono outline-none"
+                    style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
+                  />
+                  {tidePic.status === "ok" && (
+                    <p className="text-xs mt-1.5" style={{ color: coefColor(tidePic.coefficient) }}>
+                      coef {tidePic.coefficient} · marée {tidePic.direction}
+                    </p>
+                  )}
+                  {tidePic.status === "loading" && (
+                    <p className="text-xs mt-1.5 flex items-center gap-1.5" style={{ color: "#7A9490" }}>
+                      <Loader2 className="w-3 h-3 animate-spin" /> calcul…
+                    </p>
+                  )}
+                  {tidePic.status === "error" && (
+                    <p className="text-xs mt-1.5" style={{ color: "#C97B3D" }}>{tidePic.error}</p>
+                  )}
+                </div>
+              )}
             </div>
 
             <div>
@@ -862,6 +954,11 @@ export default function JournalPeche() {
                       )}
                       {s.coefManuel && (
                         <span className="text-xs" style={{ color: "#5A6E6A" }}>(coef manuel)</span>
+                      )}
+                      {s.heurePic && (
+                        <span className="text-xs" style={{ color: "#C97B3D" }}>
+                          pic {s.heurePic}{s.coefPic != null ? ` · coef ${s.coefPic}` : ""}
+                        </span>
                       )}
                     </div>
                     {s.notes && <p className="text-sm truncate" style={{ color: "#C7D3D0" }}>{s.notes}</p>}
