@@ -40,6 +40,25 @@ create policy "authenticated users only"
 -- par l'app via supabase.channel(...)) :
 alter publication supabase_realtime add table sorties;
 
+-- Commentaires laissés par les frères sous une sortie
+create table commentaires (
+  id uuid primary key default gen_random_uuid(),
+  sortie_id uuid not null references sorties(id) on delete cascade,
+  prenom text not null,
+  texte text not null,
+  created_at timestamptz default now()
+);
+
+alter table commentaires enable row level security;
+
+create policy "authenticated users only"
+  on commentaires
+  for all
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
+
+alter publication supabase_realtime add table commentaires;
+
 -- Stockage des photos de prises : crée un bucket public "photos" (lecture
 -- publique, mais seuls les utilisateurs connectés peuvent en envoyer).
 insert into storage.buckets (id, name, public)
@@ -79,3 +98,7 @@ create policy "authenticated can delete photos"
 -- ⤵ Si la table "sorties" existe déjà (installation faite avant l'ajout de la
 -- carte des lieux de prise), lance plutôt cette ligne seule :
 -- alter table sorties add column if not exists lieux jsonb;
+
+-- ⤵ Si la table "sorties" existe déjà (installation faite avant l'ajout des
+-- commentaires), lance plutôt le bloc "commentaires" ci-dessus (create table +
+-- RLS + policy + realtime) seul, la table "sorties" n'a pas besoin de changer.

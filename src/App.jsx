@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
-import { Fish, Waves, Clock, Anchor, ExternalLink, Trash2, Loader2, Plus, TrendingUp, MapPin, Settings, AlertTriangle, LogOut } from "lucide-react";
+import { Fish, Waves, Clock, Anchor, ExternalLink, Trash2, Loader2, Plus, TrendingUp, MapPin, AlertTriangle, LogOut, MessageCircle, Send } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
@@ -166,8 +166,13 @@ export default function JournalPeche() {
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("log");
 
+  const [commentaires, setCommentaires] = useState([]);
+  const [openComments, setOpenComments] = useState(null); // id de la sortie dont les commentaires sont dépliés
+  const [commentDraft, setCommentDraft] = useState("");
+  const [commentPrenom, setCommentPrenom] = useState(PRENOMS[0]);
+  const [postingComment, setPostingComment] = useState(false);
+
   const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
-  const [showSettings, setShowSettings] = useState(false);
   const [sites, setSites] = useState(null); // liste brute renvoyée par /sites
 
   const [form, setForm] = useState({
@@ -291,6 +296,47 @@ export default function JournalPeche() {
     };
   }, [session]);
 
+  async function loadCommentaires() {
+    const { data, error: err } = await supabase
+      .from("commentaires")
+      .select("*")
+      .order("created_at", { ascending: true });
+    if (err) return;
+    setCommentaires(data || []);
+  }
+
+  useEffect(() => {
+    if (!session) return;
+    loadCommentaires();
+
+    // Live sync : recharge dès qu'un frère ajoute un commentaire
+    const channel = supabase
+      .channel("commentaires-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "commentaires" }, () => {
+        loadCommentaires();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [session]);
+
+  async function addComment(sortieId) {
+    if (!commentDraft.trim()) return;
+    setPostingComment(true);
+    const { error: err } = await supabase
+      .from("commentaires")
+      .insert([{ sortie_id: sortieId, prenom: commentPrenom, texte: commentDraft.trim() }]);
+    setPostingComment(false);
+    if (err) {
+      setError("Impossible d'enregistrer le commentaire.");
+      return;
+    }
+    setCommentDraft("");
+    loadCommentaires();
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -303,11 +349,6 @@ export default function JournalPeche() {
       }
     })();
   }, []);
-
-  function saveApiKey(key) {
-    setApiKey(key);
-    localStorage.setItem(API_KEY_STORAGE, key);
-  }
 
   function resolveSiteId(spotKey) {
     const spot = SPOTS.find((s) => s.key === spotKey);
@@ -648,6 +689,33 @@ export default function JournalPeche() {
     return pts;
   }, [sorties]);
 
+  const commentsBySortie = useMemo(() => {
+    const map = {};
+    for (const c of commentaires) {
+      if (!map[c.sortie_id]) map[c.sortie_id] = [];
+      map[c.sortie_id].push(c);
+    }
+    return map;
+  }, [commentaires]);
+
+  const sortiesByMonth = useMemo(() => {
+    if (!sorties) return [];
+    const sorted = sorties.slice().sort((a, b) => (a.date + a.heure < b.date + b.heure ? 1 : -1));
+    const groups = [];
+    let currentKey = null;
+    for (const s of sorted) {
+      const key = s.date.slice(0, 7); // YYYY-MM
+      if (key !== currentKey) {
+        const d = new Date(`${s.date}T12:00:00`);
+        const label = d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+        groups.push({ key, label: label.charAt(0).toUpperCase() + label.slice(1), items: [] });
+        currentKey = key;
+      }
+      groups[groups.length - 1].items.push(s);
+    }
+    return groups;
+  }, [sorties]);
+
   const totalPrises = sorties ? sorties.filter((s) => s.prise).length : 0;
 
   const sharedStyle = (
@@ -724,34 +792,11 @@ export default function JournalPeche() {
             </p>
           </div>
           <div className="flex items-center gap-3 shrink-0 mt-1">
-            <button onClick={() => setShowSettings((s) => !s)} aria-label="Réglages">
-              <Settings className="w-6 h-6" style={{ color: "#3E5C50" }} />
-            </button>
             <button onClick={handleLogout} aria-label="Se déconnecter">
               <LogOut className="w-5 h-5" style={{ color: "#3E5C50" }} />
             </button>
           </div>
         </header>
-
-        {showSettings && (
-          <div className="rounded-lg p-4 mb-8 space-y-2" style={{ background: "#122B32", border: "1px solid #1D3A41" }}>
-            <p className="eyebrow text-xs" style={{ color: "#7A9490" }}>Clé API marée (api-maree.fr)</p>
-            <p className="text-xs" style={{ color: "#7A9490" }}>
-              Le coefficient est calculé automatiquement à partir de vraies données de marée. Crée un compte gratuit sur{" "}
-              <a href="https://api-maree.fr/register" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: "#C97B3D" }}>
-                api-maree.fr
-              </a>{" "}
-              puis colle ta clé ici (elle reste sur ce PC).
-            </p>
-            <input
-              value={apiKey}
-              onChange={(e) => saveApiKey(e.target.value)}
-              placeholder="colle ta clé API ici"
-              className="w-full rounded-md px-3 py-2 text-sm mono outline-none"
-              style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
-            />
-          </div>
-        )}
 
         {/* Quick stat strip */}
         <div className="grid grid-cols-3 gap-3 mb-8">
@@ -1125,67 +1170,139 @@ export default function JournalPeche() {
                 Le carnet est vide. Enregistre ta première sortie.
               </p>
             )}
-            {sorties
-              .slice()
-              .sort((a, b) => (a.date + a.heure < b.date + b.heure ? 1 : -1))
-              .map((s) => (
-                <div
-                  key={s.id}
-                  className="rounded-lg p-4 flex items-center justify-between gap-3"
-                  style={{ background: "#122B32", borderLeft: `3px solid ${coefColor(s.coefficient)}` }}
-                >
-                  {s.photoUrl && (
-                    <button
-                      type="button"
-                      onClick={() => setLightbox(s.photoUrl)}
-                      className="shrink-0 rounded-md overflow-hidden"
-                      style={{ width: 56, height: 56 }}
-                    >
-                      <img src={s.photoUrl} alt="prise" className="w-full h-full object-cover" />
-                    </button>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span className="mono text-xs" style={{ color: "#7A9490" }}>
-                        {s.date} · {s.heure}{s.heureFin ? `–${s.heureFin}` : ""}
-                      </span>
-                      <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "#0B2027", color: "#9FB3AE" }}>
-                        {s.prenom}
-                      </span>
-                      <span className="text-xs flex items-center gap-1" style={{ color: "#7A9490" }}>
-                        <MapPin className="w-3 h-3" /> {s.pointLabel || s.point}
-                      </span>
-                      {s.direction && (
-                        <span className="text-xs" style={{ color: "#6FA8AE" }}>{s.direction}</span>
-                      )}
-                      {s.prise ? (
-                        <span className="text-xs flex items-center gap-1" style={{ color: "#7FA37A" }}>
-                          <Fish className="w-3 h-3" /> {s.nbPoissons ? `${s.nbPoissons}× ` : ""}{s.espece || "prise"}
-                        </span>
-                      ) : (
-                        <span className="text-xs" style={{ color: "#8C7355" }}>bredouille</span>
-                      )}
-                      {s.coefManuel && (
-                        <span className="text-xs" style={{ color: "#5A6E6A" }}>(coef manuel)</span>
-                      )}
-                      {s.heurePic && (
-                        <span className="text-xs" style={{ color: "#C97B3D" }}>
-                          pic {s.heurePic}{s.coefPic != null ? ` · coef ${s.coefPic}` : ""}
-                        </span>
-                      )}
-                    </div>
-                    {s.notes && <p className="text-sm truncate" style={{ color: "#C7D3D0" }}>{s.notes}</p>}
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className="mono text-lg font-semibold" style={{ color: coefColor(s.coefficient) }}>
-                      {s.coefficient}
-                    </span>
-                    <button onClick={() => removeSortie(s.id)} aria-label="Supprimer">
-                      <Trash2 className="w-4 h-4" style={{ color: "#5A6E6A" }} />
-                    </button>
-                  </div>
+            {sortiesByMonth.map((group) => (
+              <div key={group.key}>
+                <p className="eyebrow text-xs mt-6 mb-2 first:mt-0" style={{ color: "#6FA8AE" }}>{group.label}</p>
+                <div className="space-y-2">
+                  {group.items.map((s) => {
+                    const comments = commentsBySortie[s.id] || [];
+                    const isOpen = openComments === s.id;
+                    return (
+                      <div
+                        key={s.id}
+                        className="rounded-lg p-4 flex flex-col gap-3"
+                        style={{ background: "#122B32", borderLeft: `3px solid ${coefColor(s.coefficient)}` }}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          {s.photoUrl && (
+                            <button
+                              type="button"
+                              onClick={() => setLightbox(s.photoUrl)}
+                              className="shrink-0 rounded-md overflow-hidden"
+                              style={{ width: 56, height: 56 }}
+                            >
+                              <img src={s.photoUrl} alt="prise" className="w-full h-full object-cover" />
+                            </button>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="mono text-xs" style={{ color: "#7A9490" }}>
+                                {s.date} · {s.heure}{s.heureFin ? `–${s.heureFin}` : ""}
+                              </span>
+                              <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "#0B2027", color: "#9FB3AE" }}>
+                                {s.prenom}
+                              </span>
+                              <span className="text-xs flex items-center gap-1" style={{ color: "#7A9490" }}>
+                                <MapPin className="w-3 h-3" /> {s.pointLabel || s.point}
+                              </span>
+                              {s.direction && (
+                                <span className="text-xs" style={{ color: "#6FA8AE" }}>{s.direction}</span>
+                              )}
+                              {s.prise ? (
+                                <span className="text-xs flex items-center gap-1" style={{ color: "#7FA37A" }}>
+                                  <Fish className="w-3 h-3" /> {s.nbPoissons ? `${s.nbPoissons}× ` : ""}{s.espece || "prise"}
+                                </span>
+                              ) : (
+                                <span className="text-xs" style={{ color: "#8C7355" }}>bredouille</span>
+                              )}
+                              {s.coefManuel && (
+                                <span className="text-xs" style={{ color: "#5A6E6A" }}>(coef manuel)</span>
+                              )}
+                              {s.heurePic && (
+                                <span className="text-xs" style={{ color: "#C97B3D" }}>
+                                  pic {s.heurePic}{s.coefPic != null ? ` · coef ${s.coefPic}` : ""}
+                                </span>
+                              )}
+                            </div>
+                            {s.notes && <p className="text-sm truncate" style={{ color: "#C7D3D0" }}>{s.notes}</p>}
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className="mono text-lg font-semibold" style={{ color: coefColor(s.coefficient) }}>
+                              {s.coefficient}
+                            </span>
+                            <button onClick={() => removeSortie(s.id)} aria-label="Supprimer">
+                              <Trash2 className="w-4 h-4" style={{ color: "#5A6E6A" }} />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenComments(isOpen ? null : s.id);
+                              setCommentDraft("");
+                            }}
+                            className="text-xs flex items-center gap-1.5"
+                            style={{ color: "#7A9490" }}
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                            {comments.length > 0 ? `${comments.length} commentaire${comments.length > 1 ? "s" : ""}` : "Commenter"}
+                          </button>
+
+                          {isOpen && (
+                            <div className="mt-2.5 space-y-2">
+                              {comments.map((c) => (
+                                <div key={c.id} className="text-xs rounded-md px-2.5 py-1.5" style={{ background: "#0B2027" }}>
+                                  <span className="mono" style={{ color: "#9FB3AE" }}>{c.prenom}</span>{" "}
+                                  <span style={{ color: "#C7D3D0" }}>{c.texte}</span>
+                                </div>
+                              ))}
+                              <div className="flex gap-1.5">
+                                <select
+                                  value={commentPrenom}
+                                  onChange={(e) => setCommentPrenom(e.target.value)}
+                                  className="text-xs rounded-md px-1.5 outline-none"
+                                  style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
+                                >
+                                  {PRENOMS.map((p) => (
+                                    <option key={p} value={p}>{p}</option>
+                                  ))}
+                                </select>
+                                <input
+                                  value={commentDraft}
+                                  onChange={(e) => setCommentDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") addComment(s.id);
+                                  }}
+                                  placeholder="Ton commentaire…"
+                                  className="flex-1 min-w-0 rounded-md px-2 py-1 text-xs outline-none"
+                                  style={{ background: "#0B2027", color: "#F2E8D5", border: "1px solid #1D3A41" }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => addComment(s.id)}
+                                  disabled={postingComment || !commentDraft.trim()}
+                                  aria-label="Envoyer"
+                                  className="rounded-md px-2 disabled:opacity-50"
+                                  style={{ background: "#3E5C50" }}
+                                >
+                                  {postingComment ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: "#F2E8D5" }} />
+                                  ) : (
+                                    <Send className="w-3.5 h-3.5" style={{ color: "#F2E8D5" }} />
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
+              </div>
+            ))}
           </div>
 
           <div className="rounded-lg p-5 mt-8" style={{ background: "#122B32" }}>
